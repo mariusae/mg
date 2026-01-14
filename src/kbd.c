@@ -13,6 +13,7 @@
 #include "kbd.h"
 #include "key.h"
 #include "macro.h"
+#include "mouse.h"
 
 #ifdef  MGLOG
 #include "log.h"
@@ -28,6 +29,11 @@ static int mgwrap(PF, int, int);
 static int		 use_metakey = TRUE;
 static int		 pushed = FALSE;
 static int		 pushedc;
+
+/* Small push-back buffer for multi-char sequences (e.g., mouse parsing) */
+#define PUSHBACK_MAX	8
+static int		 pushback_buf[PUSHBACK_MAX];
+static int		 pushback_count = 0;
 
 struct map_element	*ele;
 struct key 		 key;
@@ -73,6 +79,33 @@ ungetkey(int c)
 	pushed = TRUE;
 }
 
+/*
+ * Push back multiple characters. They will be returned in FIFO order.
+ */
+static void
+pushback(int c)
+{
+	if (pushback_count < PUSHBACK_MAX)
+		pushback_buf[pushback_count++] = c;
+}
+
+/*
+ * Get a character, checking pushback buffer first.
+ */
+static int
+getnextc(void)
+{
+	if (pushback_count > 0) {
+		int c = pushback_buf[0];
+		int i;
+		for (i = 0; i < pushback_count - 1; i++)
+			pushback_buf[i] = pushback_buf[i + 1];
+		pushback_count--;
+		return c;
+	}
+	return ttgetc();
+}
+
 int
 getkey(int flag)
 {
@@ -93,7 +126,7 @@ getkey(int flag)
 		c = pushedc;
 		pushed = FALSE;
 	} else
-		c = ttgetc();
+		c = getnextc();
 
 	if (bs_map) {
 		if (c == CCHR('H'))
@@ -157,13 +190,41 @@ doin(void)
 {
 	KEYMAP	*curmap;
 	PF	 funct;
+	int	 c;
 
 	*(promptp = prompt) = '\0';
 	curmap = curbp->b_modes[curbp->b_nmodes]->p_map;
 	key.k_count = 0;
-	while ((funct = doscan(curmap, (key.k_chars[key.k_count++] =
-	    getkey(TRUE)), &curmap)) == NULL)
-		/* nothing */;
+
+	/* Get first character */
+	c = getkey(TRUE);
+
+	/* Check for mouse escape sequence: ESC [ < ... */
+	if (c == CCHR('[') && mouse_enabled) {
+		int c2 = getnextc();
+		if (c2 == '[') {
+			int c3 = getnextc();
+			if (c3 == '<') {
+				/* This is a mouse event */
+				struct mouse_event me;
+				if (mouse_parse(c3, &me)) {
+					mouse_handle(&me);
+					return TRUE;
+				}
+			}
+			/* Not a mouse sequence, push back chars */
+			pushback(c2);
+			pushback(c3);
+		} else {
+			pushback(c2);
+		}
+	}
+
+	key.k_chars[key.k_count++] = c;
+	while ((funct = doscan(curmap, key.k_chars[key.k_count - 1],
+	    &curmap)) == NULL) {
+		key.k_chars[key.k_count++] = getkey(TRUE);
+	}
 
 #ifdef  MGLOG
 	if (!mglog(funct, curmap))

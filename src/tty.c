@@ -36,6 +36,7 @@
 
 #include "ttydef.h"
 #include "def.h"
+#include "mouse.h"
 
 static int	 charcost(const char *);
 
@@ -129,6 +130,7 @@ ttinit(void)
 		/* enter application mode */
 		putpad(enter_ca_mode, 1);
 
+	mouse_init();
 	ttresize();
 }
 
@@ -152,6 +154,7 @@ ttreinit(void)
 		/* turn on keypad */
 		putpad(keypad_xmit, 1);
 
+	mouse_init();
 	ttresize();
 }
 
@@ -165,6 +168,7 @@ void
 tttidy(void)
 {
 	ttykeymaptidy();
+	mouse_close();
 
 	/* set the term back to normal mode */
 	if (exit_ca_mode)
