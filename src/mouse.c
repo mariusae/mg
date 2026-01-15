@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>
 
 #include "def.h"
 #include "mouse.h"
@@ -20,6 +21,13 @@ int mouse_enabled = 0;
 static int mouse_down = 0;
 static int drag_start_x = -1;
 static int drag_start_y = -1;
+
+/* Track double-click detection */
+static struct timeval last_click_time = {0, 0};
+static int last_click_x = -1;
+static int last_click_y = -1;
+
+#define DOUBLE_CLICK_MS 400	/* Double-click time threshold in milliseconds */
 
 /* Escape sequences for mouse mode */
 #define MOUSE_SGR_ON	"\033[?1000h\033[?1002h\033[?1006h"
@@ -258,6 +266,40 @@ mouse_move_to(int x, int y)
 }
 
 /*
+ * Select the word at the current cursor position.
+ * Sets mark at start of word and moves cursor to end of word.
+ * Returns TRUE if a word was selected, FALSE if cursor is not on a word.
+ */
+static int
+select_word(void)
+{
+	struct line *lp = curwp->w_dotp;
+	int offset = curwp->w_doto;
+
+	/* Check if we're on a word character */
+	if (offset >= llength(lp) || !ISWORD(lgetc(lp, offset)))
+		return FALSE;
+
+	/* Move to start of word */
+	while (offset > 0 && ISWORD(lgetc(lp, offset - 1)))
+		offset--;
+
+	/* Set cursor at start of word, then set mark */
+	curwp->w_doto = offset;
+	isetmark();
+
+	/* Move to end of word */
+	while (offset < llength(lp) && ISWORD(lgetc(lp, offset)))
+		offset++;
+
+	/* Set cursor at end of word */
+	curwp->w_doto = offset;
+	curwp->w_rflag |= WFFULL;
+
+	return TRUE;
+}
+
+/*
  * Handle a mouse event.
  * Returns TRUE if the event was handled, FALSE otherwise.
  */
@@ -267,6 +309,27 @@ mouse_handle(struct mouse_event *mep)
 	switch (mep->me_type) {
 	case MOUSE_PRESS:
 		if (mep->me_button == MOUSE_BUTTON_LEFT) {
+			struct timeval now;
+			long elapsed_ms;
+			int is_double_click = 0;
+
+			gettimeofday(&now, NULL);
+
+			/* Calculate elapsed time in milliseconds */
+			elapsed_ms = (now.tv_sec - last_click_time.tv_sec) * 1000 +
+			             (now.tv_usec - last_click_time.tv_usec) / 1000;
+
+			/* Check for double-click: same position within time threshold */
+			if (elapsed_ms <= DOUBLE_CLICK_MS && elapsed_ms >= 0 &&
+			    mep->me_x == last_click_x && mep->me_y == last_click_y) {
+				is_double_click = 1;
+			}
+
+			/* Update last click tracking */
+			last_click_time = now;
+			last_click_x = mep->me_x;
+			last_click_y = mep->me_y;
+
 			/* Left click - position cursor */
 			mouse_down = 1;
 			drag_start_x = mep->me_x;
@@ -280,7 +343,15 @@ mouse_handle(struct mouse_event *mep)
 				curwp->w_rflag |= WFFULL;
 			}
 
-			return mouse_move_to(mep->me_x, mep->me_y);
+			/* Position cursor first */
+			if (mouse_move_to(mep->me_x, mep->me_y) == FALSE)
+				return FALSE;
+
+			/* If double-click, select the word at cursor */
+			if (is_double_click)
+				select_word();
+
+			return TRUE;
 		} else if (mep->me_button == MOUSE_WHEEL_UP) {
 			/* Scroll up - view only, preserve cursor/selection */
 			return scroll_view_only(-3);
