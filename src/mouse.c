@@ -305,8 +305,9 @@ mouse_handle(struct mouse_event *mep)
 	case MOUSE_RELEASE:
 		if (mep->me_button == MOUSE_BUTTON_LEFT) {
 			mouse_down = 0;
-			/* If we haven't dragged, just position cursor */
-			/* If we have dragged, the selection is already set */
+			/* If we have a selection, copy to system clipboard */
+			if (curwp->w_markp != NULL)
+				region_to_clipboard();
 			return TRUE;
 		}
 		break;

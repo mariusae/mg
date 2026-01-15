@@ -98,6 +98,10 @@ copyregion(int f, int n)
 			++loffs;
 		}
 	}
+
+	/* Also copy to system clipboard via OSC 52 */
+	region_to_clipboard();
+
 	clearmark(FFARG, 0);
 
 	return (TRUE);
@@ -672,4 +676,77 @@ preadin(int fd)
 
 	region_put_data(buf, len);
 	return (TRUE);
+}
+
+/*
+ * Base64 encoding table.
+ */
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/*
+ * Base64 encode data. Caller must free returned string.
+ * Returns NULL on allocation failure.
+ */
+static char *
+base64_encode(const char *data, size_t len)
+{
+	size_t olen = 4 * ((len + 2) / 3) + 1;
+	char *out = malloc(olen);
+	char *p;
+	size_t i;
+
+	if (out == NULL)
+		return NULL;
+
+	p = out;
+	for (i = 0; i < len; i += 3) {
+		unsigned int n = ((unsigned char)data[i]) << 16;
+		if (i + 1 < len)
+			n |= ((unsigned char)data[i + 1]) << 8;
+		if (i + 2 < len)
+			n |= ((unsigned char)data[i + 2]);
+
+		*p++ = b64_table[(n >> 18) & 0x3f];
+		*p++ = b64_table[(n >> 12) & 0x3f];
+		*p++ = (i + 1 < len) ? b64_table[(n >> 6) & 0x3f] : '=';
+		*p++ = (i + 2 < len) ? b64_table[n & 0x3f] : '=';
+	}
+	*p = '\0';
+	return out;
+}
+
+/*
+ * Copy the current region to the system clipboard via OSC 52.
+ * This allows terminal emulators to access the selected text.
+ */
+int
+region_to_clipboard(void)
+{
+	struct region region;
+	char *text, *encoded;
+
+	if (getregion(&region) != TRUE)
+		return FALSE;
+
+	if (region.r_size == 0)
+		return TRUE;
+
+	text = malloc(region.r_size + 1);
+	if (text == NULL)
+		return FALSE;
+
+	region_get_data(&region, text, region.r_size);
+
+	encoded = base64_encode(text, region.r_size);
+	free(text);
+	if (encoded == NULL)
+		return FALSE;
+
+	/* Send OSC 52 escape sequence to set clipboard */
+	fprintf(stdout, "\033]52;c;%s\007", encoded);
+	fflush(stdout);
+
+	free(encoded);
+	return TRUE;
 }

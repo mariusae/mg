@@ -731,6 +731,7 @@ int		 prefixregion(int, int);
 int		 setprefix(int, int);
 int		 region_get_data(struct region *, char *, int);
 void		 region_put_data(const char *, int);
+int		 region_to_clipboard(void);
 int		 markbuffer(int, int);
 int		 piperegion(int, int);
 int		 shellcommand(int, int);
