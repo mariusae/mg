@@ -514,6 +514,15 @@ update(int modelinecolor)
 		if (wp->w_rflag == 0)
 			continue;
 
+		/*
+		 * If WFSAVE is set, skip reframing - allow cursor off-screen.
+		 * This is used by mouse wheel scrolling to preserve selection.
+		 */
+		if (wp->w_rflag & WFSAVE) {
+			wp->w_rflag &= ~WFSAVE;
+			goto out;
+		}
+
 		if ((wp->w_rflag & WFFRAME) == 0) {
 			lp = wp->w_linep;
 			for (i = 0; i < wp->w_ntrows; ++i) {
@@ -558,12 +567,42 @@ update(int modelinecolor)
 			int line_num;
 			struct line *tlp;
 
-			/* Start from dotp and walk back to linep */
+			/*
+			 * Calculate line number of w_linep.
+			 * Handle both cases: cursor above or below the view.
+			 */
 			line_num = wp->w_dotline;
-			for (tlp = wp->w_dotp; tlp != wp->w_linep &&
-			    lback(tlp) != wp->w_bufp->b_headp;
-			    tlp = lback(tlp))
-				line_num--;
+			if (wp->w_dotp == wp->w_linep) {
+				/* Cursor is at top of view */
+				/* line_num is already correct */
+			} else {
+				/* Try walking back from cursor to linep */
+				int found = 0;
+				int steps = 0;
+				for (tlp = wp->w_dotp; tlp != wp->w_bufp->b_headp;
+				    tlp = lback(tlp)) {
+					if (tlp == wp->w_linep) {
+						found = 1;
+						break;
+					}
+					steps++;
+				}
+				if (found) {
+					/* linep is above cursor */
+					line_num = wp->w_dotline - steps;
+				} else {
+					/* linep is below cursor, walk forward */
+					steps = 0;
+					for (tlp = wp->w_dotp; tlp != wp->w_bufp->b_headp;
+					    tlp = lforw(tlp)) {
+						if (tlp == wp->w_linep) {
+							break;
+						}
+						steps++;
+					}
+					line_num = wp->w_dotline + steps;
+				}
+			}
 
 			if ((wp->w_rflag & ~WFMODE) == WFEDIT) {
 				while (lp != wp->w_dotp) {

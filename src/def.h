@@ -318,6 +318,7 @@ struct mgwin {
 #define WFEDIT	0x04			/* Editing within a line.	 */
 #define WFFULL	0x08			/* Do a full display.		 */
 #define WFMODE	0x10			/* Update mode line.		 */
+#define WFSAVE	0x20			/* Don't reframe even if cursor off-screen */
 
 /*
  * Variable structure.

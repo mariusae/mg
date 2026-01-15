@@ -26,6 +26,46 @@ static int drag_start_y = -1;
 #define MOUSE_SGR_OFF	"\033[?1006l\033[?1002l\033[?1000l"
 
 /*
+ * Scroll the view by n lines without moving the cursor.
+ * Positive n scrolls down (view moves forward), negative scrolls up.
+ * This preserves selections during mouse wheel scrolling.
+ */
+static int
+scroll_view_only(int n)
+{
+	struct line *lp;
+	int i;
+
+	if (n == 0)
+		return TRUE;
+
+	lp = curwp->w_linep;
+
+	if (n > 0) {
+		/* Scroll down - move view forward */
+		for (i = 0; i < n; i++) {
+			if (lforw(lp) == curbp->b_headp)
+				break;
+			lp = lforw(lp);
+		}
+	} else {
+		/* Scroll up - move view backward */
+		for (i = 0; i > n; i--) {
+			if (lback(lp) == curbp->b_headp)
+				break;
+			lp = lback(lp);
+		}
+	}
+
+	if (lp != curwp->w_linep) {
+		curwp->w_linep = lp;
+		curwp->w_rflag |= WFFULL | WFSAVE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Enable mouse tracking in the terminal.
  * Uses SGR extended mouse mode (1006) for better coordinate support.
  */
@@ -242,11 +282,11 @@ mouse_handle(struct mouse_event *mep)
 
 			return mouse_move_to(mep->me_x, mep->me_y);
 		} else if (mep->me_button == MOUSE_WHEEL_UP) {
-			/* Scroll up */
-			return back1page(0, 3);
+			/* Scroll up - view only, preserve cursor/selection */
+			return scroll_view_only(-3);
 		} else if (mep->me_button == MOUSE_WHEEL_DOWN) {
-			/* Scroll down */
-			return forw1page(0, 3);
+			/* Scroll down - view only, preserve cursor/selection */
+			return scroll_view_only(3);
 		}
 		break;
 
