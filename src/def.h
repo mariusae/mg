@@ -161,6 +161,7 @@ typedef int	(*PF)(int, int);	/* generally useful type */
 #define CNONE	0		/* Unknown color.		 */
 #define CTEXT	1		/* Text color.			 */
 #define CMODE	2		/* Mode line color.		 */
+#define CSELECT	3		/* Selection highlight color.	 */
 
 /*
  * Flags for keyboard invoked functions.

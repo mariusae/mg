@@ -232,10 +232,13 @@ mouse_handle(struct mouse_event *mep)
 			drag_start_x = mep->me_x;
 			drag_start_y = mep->me_y;
 
-			/* Clear any existing mark first */
-			curwp->w_markp = NULL;
-			curwp->w_marko = 0;
-			curwp->w_markline = 0;
+			/* Clear any existing mark and force redraw */
+			if (curwp->w_markp != NULL) {
+				curwp->w_markp = NULL;
+				curwp->w_marko = 0;
+				curwp->w_markline = 0;
+				curwp->w_rflag |= WFFULL;
+			}
 
 			return mouse_move_to(mep->me_x, mep->me_y);
 		} else if (mep->me_button == MOUSE_WHEEL_UP) {

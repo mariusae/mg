@@ -34,6 +34,7 @@ struct video {
 	short	v_color;	/* Color of the line.		 */
 	int	v_cost;		/* Cost of display.		 */
 	char	*v_text;	/* The actual characters.	 */
+	char	*v_attr;	/* Per-character attributes.	 */
 };
 
 #define VFCHG	0x0001			/* Changed.			 */
@@ -96,6 +97,57 @@ static int	 timesh  = FALSE;
 
 /* Is macro recording enabled? */
 extern int macrodef;
+
+/*
+ * Check if a buffer offset on a given line is within the selection.
+ * Returns 1 if selected, 0 otherwise.
+ * line_num is the 1-based line number in the buffer.
+ * offset is the byte offset within the line.
+ */
+static int
+in_selection(struct mgwin *wp, int line_num, int offset)
+{
+	int mark_line, dot_line, mark_off, dot_off;
+	int start_line, end_line, start_off, end_off;
+
+	if (wp->w_markp == NULL)
+		return 0;
+
+	mark_line = wp->w_markline;
+	dot_line = wp->w_dotline;
+	mark_off = wp->w_marko;
+	dot_off = wp->w_doto;
+
+	/* Handle same position - no selection */
+	if (mark_line == dot_line && mark_off == dot_off)
+		return 0;
+
+	/* Normalize: start <= end */
+	if (mark_line < dot_line ||
+	    (mark_line == dot_line && mark_off < dot_off)) {
+		start_line = mark_line;
+		start_off = mark_off;
+		end_line = dot_line;
+		end_off = dot_off;
+	} else {
+		start_line = dot_line;
+		start_off = dot_off;
+		end_line = mark_line;
+		end_off = mark_off;
+	}
+
+	/* Check if line is in range */
+	if (line_num < start_line || line_num > end_line)
+		return 0;
+
+	/* Check column bounds */
+	if (line_num == start_line && offset < start_off)
+		return 0;
+	if (line_num == end_line && offset >= end_off)
+		return 0;
+
+	return 1;
+}
 
 /*
  * Since we don't have variables (we probably should) these are command
@@ -199,6 +251,8 @@ vtresize(int force, int newrow, int newcol)
 			for (i = 2 * (newrow - 1); i < 2 * (nrow - 1); i++) {
 				free(video[i].v_text);
 				video[i].v_text = NULL;
+				free(video[i].v_attr);
+				video[i].v_attr = NULL;
 			}
 		}
 
@@ -225,9 +279,14 @@ vtresize(int force, int newrow, int newcol)
 		}
 	}
 	if (rowchanged || colchanged || first_run) {
-		for (i = 0; i < 2 * (newrow - 1); i++)
+		for (i = 0; i < 2 * (newrow - 1); i++) {
 			TRYREALLOC(video[i].v_text, newcol);
+			TRYREALLOC(video[i].v_attr, newcol);
+			memset(video[i].v_attr, 0, newcol);
+		}
 		TRYREALLOC(blanks.v_text, newcol);
+		TRYREALLOC(blanks.v_attr, newcol);
+		memset(blanks.v_attr, 0, newcol);
 	}
 
 	nrow = newrow;
@@ -396,8 +455,11 @@ vteeol(void)
 	struct video *vp;
 
 	vp = vscreen[vtrow];
-	while (vtcol < ncol)
-		vp->v_text[vtcol++] = ' ';
+	while (vtcol < ncol) {
+		vp->v_text[vtcol] = ' ';
+		vp->v_attr[vtcol] = 0;
+		vtcol++;
+	}
 }
 
 /*
@@ -436,6 +498,13 @@ update(int modelinecolor)
 			wp->w_rflag |= WFMODE;
 			wp = wp->w_wndp;
 		}
+	}
+	/* Force full redraw if there's an active selection */
+	wp = wheadp;
+	while (wp != NULL) {
+		if (wp->w_markp != NULL && wp->w_rflag != 0)
+			wp->w_rflag |= WFFULL;
+		wp = wp->w_wndp;
 	}
 	hflag = FALSE;			/* Not hard. */
 	for (wp = wheadp; wp != NULL; wp = wp->w_wndp) {
@@ -483,30 +552,56 @@ update(int modelinecolor)
 	out:
 		lp = wp->w_linep;	/* Try reduced update.	 */
 		i = wp->w_toprow;
-		if ((wp->w_rflag & ~WFMODE) == WFEDIT) {
-			while (lp != wp->w_dotp) {
-				++i;
-				lp = lforw(lp);
-			}
-			vscreen[i]->v_color = CTEXT;
-			vscreen[i]->v_flag |= (VFCHG | VFHBAD);
-			vtmove(i, 0);
-			for (j = 0; j < llength(lp); ++j)
-				vtputc(lgetc(lp, j), wp);
-			vteeol();
-		} else if ((wp->w_rflag & (WFEDIT | WFFULL)) != 0) {
-			hflag = TRUE;
-			while (i < wp->w_toprow + wp->w_ntrows) {
+
+		/* Calculate line number of first visible line */
+		{
+			int line_num;
+			struct line *tlp;
+
+			/* Start from dotp and walk back to linep */
+			line_num = wp->w_dotline;
+			for (tlp = wp->w_dotp; tlp != wp->w_linep &&
+			    lback(tlp) != wp->w_bufp->b_headp;
+			    tlp = lback(tlp))
+				line_num--;
+
+			if ((wp->w_rflag & ~WFMODE) == WFEDIT) {
+				while (lp != wp->w_dotp) {
+					++i;
+					++line_num;
+					lp = lforw(lp);
+				}
 				vscreen[i]->v_color = CTEXT;
 				vscreen[i]->v_flag |= (VFCHG | VFHBAD);
 				vtmove(i, 0);
-				if (lp != wp->w_bufp->b_headp) {
-					for (j = 0; j < llength(lp); ++j)
-						vtputc(lgetc(lp, j), wp);
-					lp = lforw(lp);
+				for (j = 0; j < llength(lp); ++j) {
+					int old_vtcol = vtcol;
+					int sel = in_selection(wp, line_num, j);
+					vtputc(lgetc(lp, j), wp);
+					while (old_vtcol < vtcol && old_vtcol < ncol)
+						vscreen[vtrow]->v_attr[old_vtcol++] = sel;
 				}
 				vteeol();
-				++i;
+			} else if ((wp->w_rflag & (WFEDIT | WFFULL)) != 0) {
+				hflag = TRUE;
+				while (i < wp->w_toprow + wp->w_ntrows) {
+					vscreen[i]->v_color = CTEXT;
+					vscreen[i]->v_flag |= (VFCHG | VFHBAD);
+					vtmove(i, 0);
+					if (lp != wp->w_bufp->b_headp) {
+						for (j = 0; j < llength(lp); ++j) {
+							int old_vtcol = vtcol;
+							int sel = in_selection(wp, line_num, j);
+							vtputc(lgetc(lp, j), wp);
+							while (old_vtcol < vtcol && old_vtcol < ncol)
+								vscreen[vtrow]->v_attr[old_vtcol++] = sel;
+						}
+						lp = lforw(lp);
+						line_num++;
+					}
+					vteeol();
+					++i;
+				}
 			}
 		}
 		if ((wp->w_rflag & WFMODE) != 0)
@@ -550,8 +645,19 @@ update(int modelinecolor)
 	 */
 	wp = wheadp;
 	while (wp != NULL) {
+		int line_num;
+		struct line *tlp;
+
 		lp = wp->w_linep;
 		i = wp->w_toprow;
+
+		/* Calculate line number of first visible line */
+		line_num = wp->w_dotline;
+		for (tlp = wp->w_dotp; tlp != wp->w_linep &&
+		    lback(tlp) != wp->w_bufp->b_headp;
+		    tlp = lback(tlp))
+			line_num--;
+
 		while (i < wp->w_toprow + wp->w_ntrows) {
 			if (vscreen[i]->v_flag & VFEXT) {
 				/* always flag extended lines as changed */
@@ -559,14 +665,20 @@ update(int modelinecolor)
 				if ((wp != curwp) || (lp != wp->w_dotp) ||
 				    (curcol < ncol - 1)) {
 					vtmove(i, 0);
-					for (j = 0; j < llength(lp); ++j)
+					for (j = 0; j < llength(lp); ++j) {
+						int old_vtcol = vtcol;
+						int sel = in_selection(wp, line_num, j);
 						vtputc(lgetc(lp, j), wp);
+						while (old_vtcol < vtcol && old_vtcol < ncol)
+							vscreen[vtrow]->v_attr[old_vtcol++] = sel;
+					}
 					vteeol();
 					/* this line no longer is extended */
 					vscreen[i]->v_flag &= ~VFEXT;
 				}
 			}
 			lp = lforw(lp);
+			line_num++;
 			++i;
 		}
 		/* if garbaged then fix up mode lines */
@@ -663,6 +775,7 @@ ucopy(struct video *vvp, struct video *pvp)
 	pvp->v_cost = vvp->v_cost;
 	pvp->v_color = vvp->v_color;
 	bcopy(vvp->v_text, pvp->v_text, ncol);
+	bcopy(vvp->v_attr, pvp->v_attr, ncol);
 }
 
 /*
@@ -675,6 +788,7 @@ updext(int currow, int curcol)
 {
 	struct line	*lp;			/* pointer to current line */
 	int	 j;			/* index into line */
+	int	 line_num;
 
 	if (ncol < 2)
 		return;
@@ -691,8 +805,18 @@ updext(int currow, int curcol)
 	 */
 	vtmove(currow, -lbound);		/* start scanning offscreen */
 	lp = curwp->w_dotp;			/* line to output */
-	for (j = 0; j < llength(lp); ++j)	/* until the end-of-line */
+	line_num = curwp->w_dotline;		/* line number for selection */
+	for (j = 0; j < llength(lp); ++j) {	/* until the end-of-line */
+		int old_vtcol = vtcol;
+		int sel = in_selection(curwp, line_num, j);
 		vtpute(lgetc(lp, j), curwp);
+		/* Set v_attr for visible columns only */
+		while (old_vtcol < vtcol) {
+			if (old_vtcol >= 0 && old_vtcol < ncol)
+				vscreen[vtrow]->v_attr[old_vtcol] = sel;
+			old_vtcol++;
+		}
+	}
 	vteeol();				/* truncate the virtual line */
 	vscreen[currow]->v_text[0] = '$';	/* and put a '$' in column 1 */
 }
@@ -709,82 +833,92 @@ updext(int currow, int curcol)
 void
 uline(int row, struct video *vvp, struct video *pvp)
 {
-	char  *cp1;
-	char  *cp2;
-	char  *cp3;
-	char  *cp4;
-	char  *cp5;
-	int    nbflag;
+	int    col, start, end;
+	int    cur_attr, nbflag;
+	int    has_selection = 0;
 
-	if (vvp->v_color != pvp->v_color) {	/* Wrong color, do a	 */
-		ttmove(row, 0);			/* full redraw.		 */
+	/* Check if this line has any selection highlighting */
+	for (col = 0; col < ncol; col++) {
+		if (vvp->v_attr[col] != 0) {
+			has_selection = 1;
+			break;
+		}
+	}
+
+	/* Mode line or line with selection - do full redraw with attrs */
+	if (vvp->v_color == CMODE || has_selection ||
+	    vvp->v_color != pvp->v_color ||
+	    memcmp(vvp->v_attr, pvp->v_attr, ncol) != 0) {
+		ttmove(row, 0);
 #ifdef	STANDOUT_GLITCH
 		if (pvp->v_color != CTEXT && magic_cookie_glitch >= 0)
 			tteeol();
 #endif
-		ttcolor(vvp->v_color);
-#ifdef	STANDOUT_GLITCH
-		cp1 = &vvp->v_text[magic_cookie_glitch > 0 ? magic_cookie_glitch : 0];
-		/*
-		 * The odd code for magic_cookie_glitch==0 is to avoid
-		 * putting the invisible glitch character on the next line.
-		 * (Hazeltine executive 80 model 30)
-		 */
-		cp2 = &vvp->v_text[ncol - (magic_cookie_glitch >= 0 ?
-		    (magic_cookie_glitch != 0 ? magic_cookie_glitch : 1) : 0)];
-#else
-		cp1 = &vvp->v_text[0];
-		cp2 = &vvp->v_text[ncol];
-#endif
-		while (cp1 != cp2) {
-			ttputc(*cp1++);
+		/* For mode line, use simple single-color output */
+		if (vvp->v_color == CMODE) {
+			ttcolor(CMODE);
+			for (col = 0; col < ncol; col++) {
+				ttputc(vvp->v_text[col]);
+				++ttcol;
+			}
+			ttcolor(CTEXT);
+		} else {
+			/* Text line with possible selection highlighting */
+			cur_attr = -1;  /* Force initial color set */
+			for (col = 0; col < ncol; col++) {
+				int attr = vvp->v_attr[col];
+				if (attr != cur_attr) {
+					ttcolor(attr ? CSELECT : CTEXT);
+					cur_attr = attr;
+				}
+				ttputc(vvp->v_text[col]);
+				++ttcol;
+			}
+			ttcolor(CTEXT);
+		}
+		/* Copy attributes to physical screen */
+		memcpy(pvp->v_attr, vvp->v_attr, ncol);
+		return;
+	}
+
+	/* Optimized path: no selection, compare text only */
+	start = 0;
+	while (start < ncol && vvp->v_text[start] == pvp->v_text[start])
+		start++;
+	if (start == ncol)	/* All equal */
+		return;
+
+	nbflag = FALSE;
+	end = ncol;
+	while (end > start && vvp->v_text[end - 1] == pvp->v_text[end - 1]) {
+		end--;
+		if (vvp->v_text[end] != ' ')
+			nbflag = TRUE;
+	}
+
+	/* Check if erase to EOL is worthwhile */
+	if (nbflag == FALSE && vvp->v_color == CTEXT) {
+		int eol_start = end;
+		while (eol_start > start && vvp->v_text[eol_start - 1] == ' ')
+			eol_start--;
+		if ((end - eol_start) <= tceeol)
+			eol_start = end;
+		ttmove(row, start);
+		ttcolor(CTEXT);
+		for (col = start; col < eol_start; col++) {
+			ttputc(vvp->v_text[col]);
 			++ttcol;
 		}
-		ttcolor(CTEXT);
-		return;
-	}
-	cp1 = &vvp->v_text[0];		/* Compute left match.	 */
-	cp2 = &pvp->v_text[0];
-	while (cp1 != &vvp->v_text[ncol] && cp1[0] == cp2[0]) {
-		++cp1;
-		++cp2;
-	}
-	if (cp1 == &vvp->v_text[ncol])	/* All equal.		 */
-		return;
-	nbflag = FALSE;
-	cp3 = &vvp->v_text[ncol];	/* Compute right match.  */
-	cp4 = &pvp->v_text[ncol];
-	while (cp3[-1] == cp4[-1]) {
-		--cp3;
-		--cp4;
-		if (cp3[0] != ' ')	/* Note non-blanks in	 */
-			nbflag = TRUE;	/* the right match.	 */
-	}
-	cp5 = cp3;			/* Is erase good?	 */
-	if (nbflag == FALSE && vvp->v_color == CTEXT) {
-		while (cp5 != cp1 && cp5[-1] == ' ')
-			--cp5;
-		/* Alcyon hack */
-		if ((int) (cp3 - cp5) <= tceeol)
-			cp5 = cp3;
-	}
-	/* Alcyon hack */
-	ttmove(row, (int) (cp1 - &vvp->v_text[0]));
-#ifdef	STANDOUT_GLITCH
-	if (vvp->v_color != CTEXT && magic_cookie_glitch > 0) {
-		if (cp1 < &vvp->v_text[magic_cookie_glitch])
-			cp1 = &vvp->v_text[magic_cookie_glitch];
-		if (cp5 > &vvp->v_text[ncol - magic_cookie_glitch])
-			cp5 = &vvp->v_text[ncol - magic_cookie_glitch];
-	} else if (magic_cookie_glitch < 0)
-#endif
+		if (eol_start != end)
+			tteeol();
+	} else {
+		ttmove(row, start);
 		ttcolor(vvp->v_color);
-	while (cp1 != cp5) {
-		ttputc(*cp1++);
-		++ttcol;
+		for (col = start; col < end; col++) {
+			ttputc(vvp->v_text[col]);
+			++ttcol;
+		}
 	}
-	if (cp5 != cp3)			/* Do erase.		 */
-		tteeol();
 }
 
 /*

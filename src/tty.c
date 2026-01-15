@@ -403,8 +403,8 @@ ttcolor(int color)
 		if (color == CTEXT)
 			/* normal video */
 			putpad(exit_standout_mode, 1);
-		else if (color == CMODE)
-			/* reverse video */
+		else if (color == CMODE || color == CSELECT)
+			/* reverse video for mode line and selection */
 			putpad(enter_standout_mode, 1);
 		/* save the color */
 		tthue = color;
